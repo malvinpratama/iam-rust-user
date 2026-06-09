@@ -59,6 +59,8 @@ async fn main() -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{port}").parse()?;
     tracing::info!(%addr, "user service listening");
     Server::builder()
+        // Trace each gRPC call and continue the caller's trace (OTLP → Jaeger).
+        .layer(tonic_tracing_opentelemetry::middleware::server::OtelGrpcLayer::default())
         .add_service(health_service)
         .add_service(UserServiceServer::with_interceptor(svc, check))
         .serve(addr)
