@@ -20,6 +20,7 @@ impl UserSvc {
 
 #[tonic::async_trait]
 impl UserService for UserSvc {
+    #[tracing::instrument(skip_all)]
     async fn create_profile(
         &self,
         request: Request<CreateProfileRequest>,
@@ -34,6 +35,7 @@ impl UserService for UserSvc {
         Ok(Response::new(to_proto(row)))
     }
 
+    #[tracing::instrument(skip_all)]
     async fn get_profile(
         &self,
         request: Request<GetProfileRequest>,
@@ -48,6 +50,7 @@ impl UserService for UserSvc {
         Ok(Response::new(to_proto(row)))
     }
 
+    #[tracing::instrument(skip_all)]
     async fn update_profile(
         &self,
         request: Request<UpdateProfileRequest>,
@@ -63,6 +66,7 @@ impl UserService for UserSvc {
         Ok(Response::new(to_proto(row)))
     }
 
+    #[tracing::instrument(skip_all)]
     async fn delete_profile(
         &self,
         request: Request<DeleteProfileRequest>,
