@@ -71,11 +71,27 @@ impl UserService for UserSvc {
         &self,
         request: Request<DeleteProfileRequest>,
     ) -> Result<Response<DeleteProfileResponse>, Status> {
+        let req = request.into_inner();
+        let user_id = parse_id(&req.user_id)?;
+        // Soft by default; hard removes the row entirely.
+        let res = if req.hard {
+            self.repo.hard_delete_profile(user_id).await
+        } else {
+            self.repo.delete_profile(user_id).await
+        };
+        res.map_err(|_| Status::internal("failed to delete profile"))?;
+        Ok(Response::new(DeleteProfileResponse { success: true }))
+    }
+
+    async fn restore_profile(
+        &self,
+        request: Request<RestoreProfileRequest>,
+    ) -> Result<Response<DeleteProfileResponse>, Status> {
         let user_id = parse_id(&request.into_inner().user_id)?;
         self.repo
-            .delete_profile(user_id)
+            .restore_profile(user_id)
             .await
-            .map_err(|_| Status::internal("failed to delete profile"))?;
+            .map_err(|_| Status::internal("failed to restore profile"))?;
         Ok(Response::new(DeleteProfileResponse { success: true }))
     }
 

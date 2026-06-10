@@ -43,9 +43,24 @@ pub async fn run(repo: Repo, js: jetstream::Context) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
+    let restored = stream
+        .get_or_create_consumer(
+            "user-service-restored",
+            pull::Config {
+                durable_name: Some("user-service-restored".to_string()),
+                filter_subject: common::events::SUBJECT_USER_RESTORED.to_string(),
+                ack_policy: AckPolicy::Explicit,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
     let r = repo.clone();
     tokio::spawn(async move { consume_registered(r, registered).await });
-    tokio::spawn(async move { consume_deleted(repo, deleted).await });
+    let r2 = repo.clone();
+    tokio::spawn(async move { consume_deleted(r2, deleted).await });
+    tokio::spawn(async move { consume_restored(repo, restored).await });
     tracing::info!("event consumer started");
     Ok(())
 }
@@ -113,13 +128,64 @@ async fn consume_deleted(repo: Repo, consumer: PullConsumer) {
             };
             match serde_json::from_slice::<common::events::UserDeleted>(&msg.payload) {
                 Ok(ev) => match Uuid::parse_str(&ev.user_id) {
-                    Ok(uid) => match repo.delete_profile(uid).await {
+                    Ok(uid) => {
+                        // Soft by default; hard removes the row (mirrors the auth side).
+                        let res = if ev.hard {
+                            repo.hard_delete_profile(uid).await
+                        } else {
+                            repo.delete_profile(uid).await
+                        };
+                        match res {
+                            Ok(_) => {
+                                let _ = msg.ack().await;
+                                tracing::info!(user_id = %ev.user_id, hard = ev.hard, "profile deleted from event");
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "delete failed; will retry");
+                                let _ = msg.ack_with(AckKind::Nak(None)).await;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        let _ = msg.ack().await;
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(error = %e, "bad UserDeleted payload");
+                    let _ = msg.ack().await;
+                }
+            }
+        }
+    }
+}
+
+async fn consume_restored(repo: Repo, consumer: PullConsumer) {
+    loop {
+        let mut messages = match consumer.messages().await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, "messages stream error");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        while let Some(item) = messages.next().await {
+            let msg = match item {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(error = %e, "recv error");
+                    break;
+                }
+            };
+            match serde_json::from_slice::<common::events::UserRestored>(&msg.payload) {
+                Ok(ev) => match Uuid::parse_str(&ev.user_id) {
+                    Ok(uid) => match repo.restore_profile(uid).await {
                         Ok(_) => {
                             let _ = msg.ack().await;
-                            tracing::info!(user_id = %ev.user_id, "profile deleted from event");
+                            tracing::info!(user_id = %ev.user_id, "profile restored from event");
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "delete failed; will retry");
+                            tracing::warn!(error = %e, "restore failed; will retry");
                             let _ = msg.ack_with(AckKind::Nak(None)).await;
                         }
                     },
@@ -128,7 +194,7 @@ async fn consume_deleted(repo: Repo, consumer: PullConsumer) {
                     }
                 },
                 Err(e) => {
-                    tracing::warn!(error = %e, "bad UserDeleted payload");
+                    tracing::warn!(error = %e, "bad UserRestored payload");
                     let _ = msg.ack().await;
                 }
             }

@@ -39,7 +39,7 @@ impl Repo {
     pub async fn get_profile(&self, user_id: Uuid) -> sqlx::Result<Option<ProfileRow>> {
         sqlx::query_as::<_, ProfileRow>(
             "SELECT user_id, display_name, bio, avatar_url, phone, created_at, updated_at \
-             FROM profiles WHERE user_id = $1",
+             FROM profiles WHERE user_id = $1 AND deleted_at IS NULL",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
@@ -61,7 +61,7 @@ impl Repo {
                avatar_url   = COALESCE($4, avatar_url), \
                phone        = COALESCE($5, phone), \
                updated_at   = now() \
-             WHERE user_id = $1 \
+             WHERE user_id = $1 AND deleted_at IS NULL \
              RETURNING user_id, display_name, bio, avatar_url, phone, created_at, updated_at",
         )
         .bind(user_id)
@@ -73,7 +73,24 @@ impl Repo {
         .await
     }
 
+    /// Soft-delete (stamps deleted_at); the row is kept for restore.
     pub async fn delete_profile(&self, user_id: Uuid) -> sqlx::Result<()> {
+        sqlx::query("UPDATE profiles SET deleted_at = now(), updated_at = now() WHERE user_id = $1 AND deleted_at IS NULL")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn restore_profile(&self, user_id: Uuid) -> sqlx::Result<()> {
+        sqlx::query("UPDATE profiles SET deleted_at = NULL, updated_at = now() WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn hard_delete_profile(&self, user_id: Uuid) -> sqlx::Result<()> {
         sqlx::query("DELETE FROM profiles WHERE user_id = $1")
             .bind(user_id)
             .execute(&self.pool)
@@ -82,10 +99,11 @@ impl Repo {
     }
 
     /// Idempotent profile creation for the event consumer (at-least-once delivery).
+    /// On re-registration of a previously soft-deleted user, clear deleted_at.
     pub async fn upsert_profile(&self, user_id: Uuid, display_name: &str) -> sqlx::Result<()> {
         sqlx::query(
             "INSERT INTO profiles (user_id, display_name) VALUES ($1, $2) \
-             ON CONFLICT (user_id) DO NOTHING",
+             ON CONFLICT (user_id) DO UPDATE SET deleted_at = NULL",
         )
         .bind(user_id)
         .bind(display_name)
@@ -103,7 +121,7 @@ impl Repo {
         sqlx::query_as::<_, ProfileRow>(
             "SELECT user_id, display_name, bio, avatar_url, phone, created_at, updated_at \
              FROM profiles \
-             WHERE ($1 = '' OR display_name ILIKE '%' || $1 || '%') \
+             WHERE deleted_at IS NULL AND ($1 = '' OR display_name ILIKE '%' || $1 || '%') \
              ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         )
         .bind(query)
@@ -116,7 +134,7 @@ impl Repo {
     pub async fn count_profiles(&self, query: &str) -> sqlx::Result<i64> {
         sqlx::query_scalar(
             "SELECT count(*) FROM profiles \
-             WHERE ($1 = '' OR display_name ILIKE '%' || $1 || '%')",
+             WHERE deleted_at IS NULL AND ($1 = '' OR display_name ILIKE '%' || $1 || '%')",
         )
         .bind(query)
         .fetch_one(&self.pool)
