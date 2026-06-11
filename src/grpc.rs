@@ -51,6 +51,29 @@ impl UserService for UserSvc {
     }
 
     #[tracing::instrument(skip_all)]
+    async fn get_profiles(
+        &self,
+        request: Request<GetProfilesRequest>,
+    ) -> Result<Response<GetProfilesResponse>, Status> {
+        let req = request.into_inner();
+        let mut ids = Vec::with_capacity(req.user_ids.len());
+        for s in &req.user_ids {
+            ids.push(parse_id(s)?);
+        }
+        if ids.is_empty() {
+            return Ok(Response::new(GetProfilesResponse { profiles: vec![] }));
+        }
+        let rows = self
+            .repo
+            .get_profiles(&ids)
+            .await
+            .map_err(|_| Status::internal("db error"))?;
+        Ok(Response::new(GetProfilesResponse {
+            profiles: rows.into_iter().map(to_proto).collect(),
+        }))
+    }
+
+    #[tracing::instrument(skip_all)]
     async fn update_profile(
         &self,
         request: Request<UpdateProfileRequest>,
