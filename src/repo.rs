@@ -140,4 +140,34 @@ impl Repo {
         .fetch_one(&self.pool)
         .await
     }
+
+    /// Soft-deleted profiles only (for the restore view).
+    pub async fn list_deleted_profiles(
+        &self,
+        query: &str,
+        limit: i64,
+        offset: i64,
+    ) -> sqlx::Result<Vec<ProfileRow>> {
+        sqlx::query_as::<_, ProfileRow>(
+            "SELECT user_id, display_name, bio, avatar_url, phone, created_at, updated_at \
+             FROM profiles \
+             WHERE deleted_at IS NOT NULL AND ($1 = '' OR display_name ILIKE '%' || $1 || '%') \
+             ORDER BY deleted_at DESC LIMIT $2 OFFSET $3",
+        )
+        .bind(query)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn count_deleted_profiles(&self, query: &str) -> sqlx::Result<i64> {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM profiles \
+             WHERE deleted_at IS NOT NULL AND ($1 = '' OR display_name ILIKE '%' || $1 || '%')",
+        )
+        .bind(query)
+        .fetch_one(&self.pool)
+        .await
+    }
 }
