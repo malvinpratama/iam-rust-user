@@ -46,6 +46,18 @@ impl Repo {
         .await
     }
 
+    /// Batch-fetch profiles by user_id (one query, no N+1). Missing / soft-
+    /// deleted ids are simply omitted.
+    pub async fn get_profiles(&self, user_ids: &[Uuid]) -> sqlx::Result<Vec<ProfileRow>> {
+        sqlx::query_as::<_, ProfileRow>(
+            "SELECT user_id, display_name, bio, avatar_url, phone, created_at, updated_at \
+             FROM profiles WHERE user_id = ANY($1) AND deleted_at IS NULL",
+        )
+        .bind(user_ids)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     pub async fn update_profile(
         &self,
         user_id: Uuid,
