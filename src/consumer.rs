@@ -57,7 +57,8 @@ pub async fn run(repo: Repo, js: jetstream::Context) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     let r = repo.clone();
-    tokio::spawn(async move { consume_registered(r, registered).await });
+    let js_pub = js.clone();
+    tokio::spawn(async move { consume_registered(r, registered, js_pub).await });
     let r2 = repo.clone();
     tokio::spawn(async move { consume_deleted(r2, deleted).await });
     tokio::spawn(async move { consume_restored(repo, restored).await });
@@ -65,7 +66,10 @@ pub async fn run(repo: Repo, js: jetstream::Context) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn consume_registered(repo: Repo, consumer: PullConsumer) {
+/// Redelivery bound before the saga gives up and emits a compensation event.
+const MAX_PROFILE_ATTEMPTS: i64 = 5;
+
+async fn consume_registered(repo: Repo, consumer: PullConsumer, js: jetstream::Context) {
     loop {
         let mut messages = match consumer.messages().await {
             Ok(m) => m,
@@ -91,8 +95,29 @@ async fn consume_registered(repo: Repo, consumer: PullConsumer) {
                             tracing::info!(user_id = %ev.user_id, "profile created from event");
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "upsert failed; will retry");
-                            let _ = msg.ack_with(AckKind::Nak(None)).await;
+                            // Saga: after exhausting retries, emit a compensation
+                            // event so auth rolls back the half-created identity.
+                            let delivered = msg.info().map(|i| i.delivered).unwrap_or(0);
+                            if delivered >= MAX_PROFILE_ATTEMPTS {
+                                let payload = serde_json::to_vec(&common::events::ProfileCreationFailed {
+                                    user_id: ev.user_id.clone(),
+                                    reason: e.to_string(),
+                                })
+                                .unwrap_or_default();
+                                match js.publish(common::events::SUBJECT_PROFILE_FAILED, payload.into()).await {
+                                    Ok(_) => {
+                                        tracing::error!(user_id = %ev.user_id, attempts = delivered, "profile creation failed permanently; emitted compensation");
+                                        let _ = msg.ack_with(AckKind::Term).await;
+                                    }
+                                    Err(pe) => {
+                                        tracing::warn!(error = %pe, "emit compensation failed; will retry");
+                                        let _ = msg.ack_with(AckKind::Nak(None)).await;
+                                    }
+                                }
+                            } else {
+                                tracing::warn!(error = %e, attempt = delivered, "upsert failed; will retry");
+                                let _ = msg.ack_with(AckKind::Nak(None)).await;
+                            }
                         }
                     },
                     Err(_) => {
