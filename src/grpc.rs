@@ -108,16 +108,32 @@ impl UserService for UserSvc {
         };
         let offset = (page - 1) * size;
 
-        let rows = self
-            .repo
-            .list_profiles(&req.query, size as i64, offset as i64)
-            .await
-            .map_err(|_| Status::internal("failed to list profiles"))?;
-        let total = self
-            .repo
-            .count_profiles(&req.query)
-            .await
-            .map_err(|_| Status::internal("failed to count profiles"))?;
+        // deleted_only flips the view to soft-deleted profiles (restore UI).
+        let (rows, total) = if req.deleted_only {
+            let rows = self
+                .repo
+                .list_deleted_profiles(&req.query, size as i64, offset as i64)
+                .await
+                .map_err(|_| Status::internal("failed to list profiles"))?;
+            let total = self
+                .repo
+                .count_deleted_profiles(&req.query)
+                .await
+                .map_err(|_| Status::internal("failed to count profiles"))?;
+            (rows, total)
+        } else {
+            let rows = self
+                .repo
+                .list_profiles(&req.query, size as i64, offset as i64)
+                .await
+                .map_err(|_| Status::internal("failed to list profiles"))?;
+            let total = self
+                .repo
+                .count_profiles(&req.query)
+                .await
+                .map_err(|_| Status::internal("failed to count profiles"))?;
+            (rows, total)
+        };
         Ok(Response::new(ListProfilesResponse {
             profiles: rows.into_iter().map(to_proto).collect(),
             total: total as i32,
